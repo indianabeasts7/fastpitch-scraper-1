@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: fastpitch-scraper
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn server:app"
+    autoDeploy: true
+    branch: main
+    runtime: python3
