@@ -36,47 +36,49 @@ def normalize_event(event):
 # USSSA Scraper
 # -------------------------------
 def scrape_usssa():
-    print("Running USSSA FASTPITCH endpoint...")
+    print("Running USSSA via ScraperAPI...")
 
-    url = "https://usssa.com/api/tournaments/searchFastpitch"
+    import os
+    api_key = os.getenv("SCRAPERAPI_KEY")
+    if not api_key:
+        print("USSSA ERROR: Missing SCRAPERAPI_KEY environment variable")
+        return []
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://usssa.com/fastpitch/eventSearch",
-        "Origin": "https://usssa.com",
-    }
+    proxy_url = (
+        f"http://api.scraperapi.com?api_key={api_key}"
+        "&url=https://usssa.com/api/tournaments/searchFastpitch"
+    )
 
     try:
-        res = requests.get(url, headers=headers, timeout=20)
-        res.raise_for_status()
-        raw = res.json()
-
-        if "tournaments" not in raw:
-            print("USSSA returned no tournaments key")
-            return []
-
-        events = []
-        for t in raw["tournaments"]:
-            events.append({
-                "event_name": t.get("name", "N/A"),
-                "start_date": t.get("startDate", "N/A"),
-                "end_date": t.get("endDate", "N/A"),
-                "location": f"{t.get('city','')}, {t.get('state','')}",
-                "sanction": "USSSA",
-                "link": f"https://usssa.com/tournament/{t.get('tournamentID','')}"
-            })
-
-        print(f"USSSA FASTPITCH: Retrieved {len(events)} events")
-        return events
-
-    except Exception as ex:
-        print("USSSA FASTPITCH FAILED:", ex)
+        r = requests.get(proxy_url, timeout=20)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"USSSA ERROR via proxy: {e}")
         return []
+
+    try:
+        data = r.json()
+    except:
+        print("USSSA ERROR: Proxy returned non-JSON data")
+        return []
+
+    if "Items" not in data:
+        print("USSSA ERROR: JSON missing 'Items' field")
+        return []
+
+    events = []
+    for item in data["Items"]:
+        events.append({
+            "event_name": item.get("Name", "N/A"),
+            "start_date": item.get("StartDate", "N/A"),
+            "end_date": item.get("EndDate", "N/A"),
+            "location": f"{item.get('City','')}, {item.get('State','')}",
+            "sanction": "USSSA",
+            "link": f"https://usssa.com/tournament/{item.get('TournamentID','')}"
+        })
+
+    print(f"USSSA: Successfully scraped {len(events)} events via proxy")
+    return events
 # -------------------------------
 # USFA Scraper
 # -------------------------------
