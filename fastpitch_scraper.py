@@ -36,37 +36,68 @@ def normalize_event(event):
 # USSSA Scraper
 # -------------------------------
 def scrape_usssa():
-    url = FREE_PROXY + "https://usssa.com/fastpitch/eventSearch/"
+    url = "https://www.usssa.com/fastpitch/eventSearch/"
+    proxy_list = [
+        "https://corsproxy.io/?",
+        "https://thingproxy.freeboard.io/fetch/",
+    ]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.usssa.com/",
+    }
+
     events = []
 
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
+    # Try direct request first
+    try_urls = [{"prefix": None, "url": url}] + [
+        {"prefix": p, "url": p + url} for p in proxy_list
+    ]
 
-        soup = BeautifulSoup(r.text, "lxml")
-        rows = soup.select(".event-row")  # USSSA uses div rows
+    for attempt in try_urls:
+        try:
+            full_url = attempt["url"]
+            print(f"USSSA: Trying {full_url}")
+            r = requests.get(full_url, headers=headers, timeout=15)
+            r.raise_for_status()
 
-        for row in rows:
-            name = row.select_one(".event-name")
-            link = row.select_one("a")
-            date = row.select_one(".event-date")
-            loc = row.select_one(".event-location")
+            soup = BeautifulSoup(r.text, "lxml")
+            rows = soup.select("table tbody tr")
 
-            events.append(
-                normalize_event({
-                    "event_name": name.text.strip() if name else "",
-                    "start_date": date.text.strip() if date else "",
-                    "end_date": date.text.strip() if date else "",
-                    "location": loc.text.strip() if loc else "",
-                    "sanction": "USSSA",
-                    "link": "https://usssa.com" + link["href"] if link else "",
+            # If absolute failure (blocked or no table), try next approach
+            if not rows:
+                print("USSSA: No result rows found, trying next method...")
+                continue
+
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) < 5:
+                    continue
+
+                event_name = cols[2].get_text(strip=True)
+                event_date = cols[0].get_text(strip=True)
+                event_loc = cols[4].get_text(strip=True)
+
+                events.append({
+                    "source": "USSSA",
+                    "name": event_name,
+                    "date": event_date,
+                    "location": event_loc,
+                    "url": url,
                 })
-            )
 
-    except Exception as e:
-        print("USSSA error:", e)
+            if events:
+                print("USSSA: Successfully retrieved events!")
+                break
+
+        except Exception as e:
+            print(f"USSSA error using {attempt['prefix']}: {e}")
+            continue
 
     return events
+
 
 
 # -------------------------------
