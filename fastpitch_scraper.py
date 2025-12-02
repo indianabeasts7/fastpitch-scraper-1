@@ -40,7 +40,20 @@ def scrape_usssa():
 
     url = "https://usssa.com/api/tournaments/search"
 
-    # USSSA requires a POST request with JSON body
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://usssa.com",
+        "Referer": "https://usssa.com/fastpitch/eventSearch",
+        "Connection": "keep-alive",
+    }
+
     payload = {
         "sport": "fastpitch",
         "data": {
@@ -58,7 +71,7 @@ def scrape_usssa():
     }
 
     try:
-        res = requests.post(url, json=payload, timeout=20)
+        res = requests.post(url, json=payload, headers=headers, timeout=20)
         res.raise_for_status()
 
         raw = res.json()
@@ -84,8 +97,6 @@ def scrape_usssa():
     except Exception as ex:
         print("USSSA API FAILED:", ex)
         return []
-
-
 
 # -------------------------------
 # USFA Scraper
