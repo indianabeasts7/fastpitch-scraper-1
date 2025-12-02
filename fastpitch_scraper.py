@@ -36,67 +36,54 @@ def normalize_event(event):
 # USSSA Scraper
 # -------------------------------
 def scrape_usssa():
-    url = "https://www.usssa.com/fastpitch/eventSearch/"
-    proxy_list = [
-        "https://corsproxy.io/?",
-        "https://thingproxy.freeboard.io/fetch/",
-    ]
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.usssa.com/",
+    print("Running USSSA JSON API scraper...")
+
+    url = "https://usssa.com/api/tournaments/search"
+
+    # USSSA requires a POST request with JSON body
+    payload = {
+        "sport": "fastpitch",
+        "data": {
+            "state": "",
+            "startDate": "",
+            "endDate": "",
+            "age": "",
+            "class": "",
+            "director": ""
+        },
+        "paging": {
+            "pageSize": 200,
+            "pageNumber": 1
+        }
     }
 
-    events = []
+    try:
+        res = requests.post(url, json=payload, timeout=20)
+        res.raise_for_status()
 
-    # Try direct request first
-    try_urls = [{"prefix": None, "url": url}] + [
-        {"prefix": p, "url": p + url} for p in proxy_list
-    ]
+        raw = res.json()
 
-    for attempt in try_urls:
-        try:
-            full_url = attempt["url"]
-            print(f"USSSA: Trying {full_url}")
-            r = requests.get(full_url, headers=headers, timeout=15)
-            r.raise_for_status()
+        if "tournaments" not in raw:
+            print("USSSA API returned no tournaments key")
+            return []
 
-            soup = BeautifulSoup(r.text, "lxml")
-            rows = soup.select("table tbody tr")
+        events = []
+        for t in raw["tournaments"]:
+            events.append({
+                "event_name": t.get("name", "N/A"),
+                "start_date": t.get("startDate", "N/A"),
+                "end_date": t.get("endDate", "N/A"),
+                "location": f"{t.get('city','')}, {t.get('state','')}",
+                "sanction": "USSSA",
+                "link": f"https://usssa.com/tournament/{t.get('tournamentID','')}"
+            })
 
-            # If absolute failure (blocked or no table), try next approach
-            if not rows:
-                print("USSSA: No result rows found, trying next method...")
-                continue
+        print(f"USSSA API: Retrieved {len(events)} events")
+        return events
 
-            for row in rows:
-                cols = row.find_all("td")
-                if len(cols) < 5:
-                    continue
-
-                event_name = cols[2].get_text(strip=True)
-                event_date = cols[0].get_text(strip=True)
-                event_loc = cols[4].get_text(strip=True)
-
-                events.append({
-                    "source": "USSSA",
-                    "name": event_name,
-                    "date": event_date,
-                    "location": event_loc,
-                    "url": url,
-                })
-
-            if events:
-                print("USSSA: Successfully retrieved events!")
-                break
-
-        except Exception as e:
-            print(f"USSSA error using {attempt['prefix']}: {e}")
-            continue
-
-    return events
+    except Exception as ex:
+        print("USSSA API FAILED:", ex)
+        return []
 
 
 
