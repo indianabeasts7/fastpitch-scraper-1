@@ -248,34 +248,51 @@ def scrape_softball_connected():
 # MAIN SCRAPE CONTROLLER
 # -------------------------------
 def run_all_scrapers():
-    all_events = []
-
     scrapers = [
         scrape_usssa,
         scrape_usfa,
         scrape_pgf,
         scrape_bullpen,
-        scrape_softball_connected,
+        scrape_softball_connected
     ]
 
+    all_events = []
     for scraper in scrapers:
-        print(f"Running {scraper.__name__}...")
-        data = scraper()
-        all_events.extend(data)
-        time.sleep(random.uniform(1, 2))  # anti-blocking delay
+        try:
+            events = scraper()
+            if events:
+                for e in events:
+                    # sanitize missing keys so deployment NEVER fails
+                    safe = {
+                        "event_name": e.get("event_name") or e.get("name") or "N/A",
+                        "start_date": e.get("start_date", "N/A"),
+                        "end_date": e.get("end_date", "N/A"),
+                        "location": e.get("location", "N/A"),
+                        "sanction": e.get("sanction", "N/A"),
+                        "link": e.get("link", "N/A")
+                    }
+                    all_events.append(safe)
+        except Exception as ex:
+            print(f"{scraper.__name__} FAILED: {ex}")
 
-    # Save JSON
-    with open("fastpitch_master.json", "w") as f:
-        json.dump(all_events, f, indent=2)
-
-    # Save CSV
-    with open("fastpitch_master.csv", "w", newline="") as f:
+    # Write CSV safely
+    with open("fastpitch_master.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["event_name", "start_date", "end_date", "location", "sanction", "link"])
         for e in all_events:
-            writer.writerow([e["event_name"], e["start_date"], e["end_date"], e["location"], e["sanction"], e["link"]])
+            writer.writerow([
+                e["event_name"],
+                e["start_date"],
+                e["end_date"],
+                e["location"],
+                e["sanction"],
+                e["link"]
+            ])
 
-    print(f"Scraped {len(all_events)} events.")
+    # Write JSON safely
+    with open("fastpitch_master.json", "w", encoding="utf-8") as f:
+        json.dump(all_events, f, indent=2)
+
     return all_events
 
 
