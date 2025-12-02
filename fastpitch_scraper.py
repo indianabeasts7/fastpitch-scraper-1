@@ -36,9 +36,9 @@ def normalize_event(event):
 # USSSA Scraper
 # -------------------------------
 def scrape_usssa():
-    print("Running USSSA JSON API scraper...")
+    print("Running USSSA FASTPITCH endpoint...")
 
-    url = "https://usssa.com/api/tournaments/search"
+    url = "https://usssa.com/api/tournaments/searchFastpitch"
 
     headers = {
         "User-Agent": (
@@ -47,37 +47,17 @@ def scrape_usssa():
             "Chrome/120.0 Safari/537.36"
         ),
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Content-Type": "application/json",
-        "Origin": "https://usssa.com",
         "Referer": "https://usssa.com/fastpitch/eventSearch",
-        "Connection": "keep-alive",
-    }
-
-    payload = {
-        "sport": "fastpitch",
-        "data": {
-            "state": "",
-            "startDate": "",
-            "endDate": "",
-            "age": "",
-            "class": "",
-            "director": ""
-        },
-        "paging": {
-            "pageSize": 200,
-            "pageNumber": 1
-        }
+        "Origin": "https://usssa.com",
     }
 
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=20)
+        res = requests.get(url, headers=headers, timeout=20)
         res.raise_for_status()
-
         raw = res.json()
 
         if "tournaments" not in raw:
-            print("USSSA API returned no tournaments key")
+            print("USSSA returned no tournaments key")
             return []
 
         events = []
@@ -91,13 +71,12 @@ def scrape_usssa():
                 "link": f"https://usssa.com/tournament/{t.get('tournamentID','')}"
             })
 
-        print(f"USSSA API: Retrieved {len(events)} events")
+        print(f"USSSA FASTPITCH: Retrieved {len(events)} events")
         return events
 
     except Exception as ex:
-        print("USSSA API FAILED:", ex)
+        print("USSSA FASTPITCH FAILED:", ex)
         return []
-
 # -------------------------------
 # USFA Scraper
 # -------------------------------
