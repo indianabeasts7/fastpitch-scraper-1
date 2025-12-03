@@ -1,9 +1,8 @@
 # fastpitch_scraper.py
-# Full multi-site scraper that proxies requests through ScraperAPI (HTTPS),
-# provides robust retries, safe normalization, and writes JSON+CSV output.
-#
-# Required env var: SCRAPERAPI_KEY
-# Dependencies: requests, beautifulsoup4, lxml (already in requirements.txt)
+# Production-ready multi-site fastpitch tournament scraper using ScrapingAnt.
+# - Requires environment variable: SCRAPINGANT_KEY
+# - Writes fastpitch_master.json and fastpitch_master.csv
+# - Defensive: retries, timeouts, fallbacks, never raises unhandled exceptions
 
 import os
 import json
@@ -15,42 +14,43 @@ from requests.utils import quote
 from bs4 import BeautifulSoup
 
 # -------------------------------
-# Global defaults
+# Config
 # -------------------------------
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    ),
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
+SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
+USE_SCRAPINGANT = bool(SCRAPINGANT_KEY)
 
-# If you want to disable proxying and use direct fetches, set this False.
-# For production keep True so sites with cloudfire/waf are proxied.
-USE_SCRAPERAPI = True if SCRAPERAPI_KEY else False
-
+# Tuning
+SCRAPINGANT_TIMEOUT = 40  # seconds per attempt
+SCRAPINGANT_RETRIES = 3
+DIRECT_TIMEOUT = 15
+DIRECT_RETRIES = 2
 
 # -------------------------------
-# Helper: fetch via ScraperAPI (with retries)
+# Helper: ScrapingAnt fetch (GET)
 # -------------------------------
-def fetch_via_scraperapi(target_url, timeout=30, max_retries=3):
+def fetch_via_scrapingant(target_url, timeout=SCRAPINGANT_TIMEOUT, max_retries=SCRAPINGANT_RETRIES):
     """
-    Fetch a URL through ScraperAPI (residential proxy) and return response text.
-    Returns None on failure. Uses HTTPS endpoint (required).
+    Fetch through ScrapingAnt's general endpoint with render enabled.
+    Returns response text or None.
     """
-    if not SCRAPERAPI_KEY:
-        print("fetch_via_scraperapi: Missing SCRAPERAPI_KEY (proxy disabled).")
+    if not SCRAPINGANT_KEY:
+        print("fetch_via_scrapingant: missing SCRAPINGANT_KEY")
         return None
 
-    # Build scraperapi URL. Include country=us for better results and render options.
     quoted = quote(target_url, safe="")
+    # Use HTTPS; render=true to allow JS-rendered pages.
     proxy_url = (
-        f"https://api.scraperapi.com?api_key={SCRAPERAPI_KEY}"
-        f"&url={quoted}"
-        "&country=us"
-        "&render=true"
-        "&keep_headers=true"
+        f"https://api.scrapingant.com/v2/general?api_key={SCRAPINGANT_KEY}"
+        f"&url={quoted}&render=true"
     )
 
     headers = {
@@ -59,59 +59,59 @@ def fetch_via_scraperapi(target_url, timeout=30, max_retries=3):
         "Connection": "keep-alive",
     }
 
-    attempt = 0
     backoff = 1.0
-    while attempt < max_retries:
+    for attempt in range(1, max_retries + 1):
         try:
             r = requests.get(proxy_url, headers=headers, timeout=timeout)
             r.raise_for_status()
             return r.text
         except Exception as e:
-            attempt += 1
-            print(f"fetch_via_scraperapi: attempt {attempt} failed for {target_url}: {e}")
-            time.sleep(backoff + random.uniform(0, 0.5))
-            backoff *= 2
+            print(f"fetch_via_scrapingant: attempt {attempt} failed for {target_url}: {e}")
+            if attempt < max_retries:
+                time.sleep(backoff + random.uniform(0, 0.5))
+                backoff *= 2
     return None
 
 
-def fetch_direct(target_url, timeout=20, max_retries=2):
-    """
-    Direct GET request (no proxy). Returns text or None.
-    """
-    headers = DEFAULT_HEADERS
-    attempt = 0
+# -------------------------------
+# Helper: Direct fetch (no proxy) fallback
+# -------------------------------
+def fetch_direct(target_url, timeout=DIRECT_TIMEOUT, max_retries=DIRECT_RETRIES):
+    headers = DEFAULT_HEADERS.copy()
     backoff = 0.8
-    while attempt < max_retries:
+    for attempt in range(1, max_retries + 1):
         try:
             r = requests.get(target_url, headers=headers, timeout=timeout)
             r.raise_for_status()
             return r.text
         except Exception as e:
-            attempt += 1
             print(f"fetch_direct: attempt {attempt} failed for {target_url}: {e}")
-            time.sleep(backoff + random.uniform(0, 0.5))
-            backoff *= 2
+            if attempt < max_retries:
+                time.sleep(backoff + random.uniform(0, 0.5))
+                backoff *= 2
     return None
 
 
+# -------------------------------
+# Unified fetch: primary=ScrapingAnt, fallback=direct
+# -------------------------------
 def fetch(target_url, prefer_proxy=True):
     """
-    Unified fetch: tries ScraperAPI first (if enabled and prefer_proxy),
-    then falls back to direct fetch. Returns text or None.
+    Try proxy first (ScrapingAnt) if enabled, then fallback to direct.
+    Returns text or None.
     """
-    if USE_SCRAPERAPI and prefer_proxy:
-        txt = fetch_via_scraperapi(target_url)
+    if USE_SCRAPINGANT and prefer_proxy:
+        txt = fetch_via_scrapingant(target_url)
         if txt:
             return txt
-        # fallback to direct if proxy failed
+        # fall through to direct fetch
     return fetch_direct(target_url)
 
 
 # -------------------------------
-# Normalization helper
+# Normalizer
 # -------------------------------
 def normalize_event(event):
-    # Accept different field names and map to canonical ones.
     return {
         "event_name": event.get("event_name") or event.get("name") or event.get("Name") or "N/A",
         "start_date": event.get("start_date") or event.get("startDate") or event.get("StartDate") or "N/A",
@@ -124,44 +124,50 @@ def normalize_event(event):
 
 
 # -------------------------------
-# USSSA scraper (uses dedicated FASTPITCH endpoint via proxy)
+# USSSA (fastpitch) - uses the FASTPITCH endpoint
 # -------------------------------
 def scrape_usssa():
     print("Running scrape_usssa...")
-    # USSSA has a fastpitch-specific endpoint used by the site; we'll proxy it
-    api_endpoint = "https://usssa.com/api/tournaments/searchFastpitch"
-
-    # Use proxy; prefer proxy mode (USSSA blocks datacenter IPs)
-    txt = fetch(api_endpoint, prefer_proxy=True)
+    # This endpoint may return JSON or HTML depending on request; we proxy+render to be safe.
+    endpoint = "https://usssa.com/api/tournaments/searchFastpitch"
+    txt = fetch(endpoint, prefer_proxy=True)
     if not txt:
         print("USSSA error: no response from endpoint")
         return []
 
-    # Try JSON parse first
+    # Try parse as JSON first
     try:
         raw = json.loads(txt)
     except Exception:
-        # If proxy returned HTML (sometimes), attempt to find JSON-like within
+        # If not JSON, try to locate JSON blob inside HTML
         try:
             soup = BeautifulSoup(txt, "lxml")
-            # sometimes endpoint returns a script tag with initial data
-            script = soup.find("script", string=lambda s: s and "tournaments" in s)
-            if script:
-                # attempt to extract JSON substring
-                text = script.string
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                raw = json.loads(text[start:end])
+            # common patterns: key named tournaments or Items
+            # try to find script tags with JSON:
+            for script in soup.find_all("script"):
+                s = script.string
+                if not s:
+                    continue
+                if "tournaments" in s or "Items" in s or "items" in s:
+                    # try to extract JSON object from script
+                    start = s.find("{")
+                    end = s.rfind("}") + 1
+                    if start != -1 and end != -1:
+                        snippet = s[start:end]
+                        try:
+                            raw = json.loads(snippet)
+                            break
+                        except Exception:
+                            continue
             else:
                 raw = {}
         except Exception as e:
             print("USSSA parse error:", e)
             return []
 
-    # Raw should contain "tournaments" or "Items"
     items = []
     if isinstance(raw, dict):
-        items = raw.get("tournaments") or raw.get("Items") or raw.get("items") or []
+        items = raw.get("tournaments") or raw.get("Items") or raw.get("items") or raw.get("data") or []
     elif isinstance(raw, list):
         items = raw
     else:
@@ -170,19 +176,19 @@ def scrape_usssa():
     events = []
     for t in items:
         try:
-            name = t.get("name") or t.get("Name") or t.get("TournamentName") or "N/A"
+            # be defensive about field names
+            name = t.get("name") or t.get("Name") or t.get("tournamentName") or "N/A"
             start = t.get("startDate") or t.get("StartDate") or t.get("Start") or "N/A"
             end = t.get("endDate") or t.get("EndDate") or "N/A"
             city = t.get("city") or t.get("City") or ""
             state = t.get("state") or t.get("State") or ""
             tid = t.get("tournamentID") or t.get("TournamentID") or t.get("id") or ""
-            link = f"https://usssa.com/tournament/{tid}" if tid else t.get("link") or "N/A"
-
+            link = f"https://usssa.com/tournament/{tid}" if tid else (t.get("link") or "N/A")
             events.append({
                 "event_name": name,
                 "start_date": start,
                 "end_date": end,
-                "location": f"{city}, {state}".strip(", "),
+                "location": ", ".join(p for p in [city, state] if p),
                 "sanction": "USSSA",
                 "link": link
             })
@@ -195,7 +201,7 @@ def scrape_usssa():
 
 
 # -------------------------------
-# USFA scraper
+# USFA
 # -------------------------------
 def scrape_usfa():
     print("Running scrape_usfa...")
@@ -208,12 +214,9 @@ def scrape_usfa():
     soup = BeautifulSoup(txt, "lxml")
     events = []
 
-    # Try a few common selectors
+    # multiple selector attempts
     selectors = [
-        ".tournament-card",
-        ".card.tournament",
-        ".event",
-        ".tournaments-list .tournament"
+        ".tournament-card", ".card.tournament", ".event", ".tournaments-list .tournament", ".listing"
     ]
     found = []
     for sel in selectors:
@@ -221,9 +224,28 @@ def scrape_usfa():
         if found:
             break
 
+    if not found:
+        # fallback: search for anchor lists
+        anchors = soup.select("a")
+        for a in anchors[:200]:
+            text = a.get_text(strip=True)
+            if len(text) > 20 and ("tournament" in text.lower() or "classic" in text.lower()):
+                href = a.get("href") or "N/A"
+                events.append({
+                    "event_name": text,
+                    "start_date": "N/A",
+                    "end_date": "N/A",
+                    "location": "N/A",
+                    "sanction": "USFA",
+                    "link": href
+                })
+        print(f"USFA: fallback found {len(events)} events")
+        return events
+
     for c in found:
         try:
-            title = (c.select_one(".title") or c.select_one("h3") or c.select_one("a")).get_text(strip=True) if c else ""
+            title = (c.select_one(".title") or c.select_one("h3") or c.select_one("a"))
+            title_text = title.get_text(strip=True) if title else "N/A"
             date = (c.select_one(".date") or c.select_one(".dates") or c.select_one(".t-date"))
             date_text = date.get_text(strip=True) if date else "N/A"
             loc = (c.select_one(".location") or c.select_one(".place") or c.select_one(".t-location"))
@@ -231,15 +253,14 @@ def scrape_usfa():
             link_tag = c.select_one("a")
             link = link_tag["href"] if link_tag and link_tag.has_attr("href") else "N/A"
             events.append({
-                "event_name": title or "N/A",
+                "event_name": title_text or "N/A",
                 "start_date": date_text,
                 "end_date": date_text,
                 "location": loc_text,
                 "sanction": "USFA",
                 "link": link
             })
-        except Exception as e:
-            # continue on parse errors
+        except Exception:
             continue
 
     print(f"USFA: found {len(events)} events")
@@ -247,7 +268,7 @@ def scrape_usfa():
 
 
 # -------------------------------
-# PGF scraper
+# PGF
 # -------------------------------
 def scrape_pgf():
     print("Running scrape_pgf...")
@@ -260,21 +281,23 @@ def scrape_pgf():
     soup = BeautifulSoup(txt, "lxml")
     events = []
 
-    # Try common card selectors
-    cards = soup.select(".tourney-box, .tournament, .event-card, .t-list-item")
+    # try a few known patterns
+    cards = soup.select(".tourney-box, .tournament, .event-card, .t-list-item, .tourney")
+    if not cards:
+        cards = soup.select("article, .card, .listing")
+
     for c in cards:
         try:
-            title = (c.select_one(".t-title") or c.select_one("h3") or c.select_one(".title"))
-            title_text = title.get_text(strip=True) if title else "N/A"
-            date = (c.select_one(".t-date") or c.select_one(".date"))
-            date_text = date.get_text(strip=True) if date else "N/A"
-            loc = (c.select_one(".t-loc") or c.select_one(".location"))
-            loc_text = loc.get_text(strip=True) if loc else "N/A"
+            title_el = c.select_one(".t-title, h3, .title, a")
+            title = title_el.get_text(strip=True) if title_el else "N/A"
+            date_el = c.select_one(".t-date, .date")
+            date_text = date_el.get_text(strip=True) if date_el else "N/A"
+            loc_el = c.select_one(".t-loc, .location")
+            loc_text = loc_el.get_text(strip=True) if loc_el else "N/A"
             link_tag = c.select_one("a")
             link = link_tag["href"] if link_tag and link_tag.has_attr("href") else "N/A"
-
             events.append({
-                "event_name": title_text,
+                "event_name": title,
                 "start_date": date_text,
                 "end_date": date_text,
                 "location": loc_text,
@@ -289,7 +312,7 @@ def scrape_pgf():
 
 
 # -------------------------------
-# Bullpen Tournaments scraper
+# Bullpen Tournaments
 # -------------------------------
 def scrape_bullpen():
     print("Running scrape_bullpen...")
@@ -304,22 +327,21 @@ def scrape_bullpen():
 
     rows = soup.select(".event-row, .event, .event-card")
     if not rows:
-        # maybe it's presented in table
-        rows = soup.select("table tr")
+        rows = soup.select("table tr, .list-item, li")
 
     for row in rows:
         try:
-            title = (row.select_one(".name") or row.select_one("h3") or row.select_one("td a"))
-            title_text = title.get_text(strip=True) if title else "N/A"
-            date = (row.select_one(".dates") or row.select_one(".date") or row.select_one("td.date"))
-            date_text = date.get_text(strip=True) if date else "N/A"
-            loc = (row.select_one(".location") or row.select_one("td.location"))
-            loc_text = loc.get_text(strip=True) if loc else "N/A"
+            title_el = row.select_one(".name, h3, a")
+            title = title_el.get_text(strip=True) if title_el else "N/A"
+            date_el = row.select_one(".dates, .date")
+            date_text = date_el.get_text(strip=True) if date_el else "N/A"
+            loc_el = row.select_one(".location, .place")
+            loc_text = loc_el.get_text(strip=True) if loc_el else "N/A"
             link_tag = row.select_one("a")
             link = link_tag["href"] if link_tag and link_tag.has_attr("href") else "N/A"
 
             events.append({
-                "event_name": title_text,
+                "event_name": title,
                 "start_date": date_text,
                 "end_date": date_text,
                 "location": loc_text,
@@ -334,7 +356,7 @@ def scrape_bullpen():
 
 
 # -------------------------------
-# SoftballConnected scraper
+# SoftballConnected
 # -------------------------------
 def scrape_softball_connected():
     print("Running scrape_softball_connected...")
@@ -347,24 +369,24 @@ def scrape_softball_connected():
     soup = BeautifulSoup(txt, "lxml")
     events = []
 
-    cards = soup.select(".tournament-card, .card, .tournament")
+    cards = soup.select(".tournament-card, .card, .tournament, .listing")
     for c in cards:
         try:
-            title = (c.select_one(".title") or c.select_one("h3") or c.select_one(".name"))
-            title_text = title.get_text(strip=True) if title else "N/A"
-            date = (c.select_one(".date") or c.select_one(".dates"))
-            date_text = date.get_text(strip=True) if date else "N/A"
-            loc = (c.select_one(".location") or c.select_one(".place"))
-            loc_text = loc.get_text(strip=True) if loc else "N/A"
+            title_el = c.select_one(".title, h3, .name, a")
+            title = title_el.get_text(strip=True) if title_el else "N/A"
+            date_el = c.select_one(".date, .dates")
+            date_text = date_el.get_text(strip=True) if date_el else "N/A"
+            loc_el = c.select_one(".location, .place, .city")
+            loc_text = loc_el.get_text(strip=True) if loc_el else "N/A"
             link_tag = c.select_one("a")
             link = link_tag["href"] if link_tag and link_tag.has_attr("href") else "N/A"
 
             events.append({
-                "event_name": title_text,
+                "event_name": title,
                 "start_date": date_text,
                 "end_date": date_text,
                 "location": loc_text,
-                "sanction": "Softball Connected",
+                "sanction": "SoftballConnected",
                 "link": link
             })
         except Exception:
@@ -375,7 +397,7 @@ def scrape_softball_connected():
 
 
 # -------------------------------
-# MAIN SCRAPE CONTROLLER
+# Controller
 # -------------------------------
 def run_all_scrapers():
     scrapers = [
@@ -393,29 +415,21 @@ def run_all_scrapers():
             data = scraper()
             if data:
                 for e in data:
-                    safe = {
-                        "event_name": (e.get("event_name") or e.get("name") or e.get("Name") or "N/A"),
-                        "start_date": e.get("start_date") or e.get("startDate") or "N/A",
-                        "end_date": e.get("end_date") or e.get("endDate") or "N/A",
-                        "location": e.get("location") or e.get("Location") or "N/A",
-                        "sanction": e.get("sanction") or "N/A",
-                        "link": e.get("link") or e.get("url") or "N/A",
-                        "age_divisions": e.get("age_divisions") or e.get("age") or []
-                    }
+                    safe = normalize_event(e)
                     all_events.append(safe)
         except Exception as ex:
             print(f"{scraper.__name__} FAILED: {ex}")
-        # small anti-block delay between scrapers
-        time.sleep(random.uniform(0.5, 1.5))
+        # polite pause
+        time.sleep(random.uniform(0.5, 1.2))
 
-    # Save JSON
+    # Write JSON
     try:
         with open("fastpitch_master.json", "w", encoding="utf-8") as f:
             json.dump(all_events, f, indent=2)
     except Exception as e:
         print("Error writing JSON:", e)
 
-    # Save CSV
+    # Write CSV
     try:
         with open("fastpitch_master.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -437,17 +451,24 @@ def run_all_scrapers():
 
 
 # -------------------------------
-# For server API
+# API helper for server.py
 # -------------------------------
 def get_events():
+    """
+    Returns the JSON object from fastpitch_master.json if present, else an empty object.
+    """
     try:
         with open("fastpitch_master.json", "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            # Keep the legacy wrapper structure if old code expects it
+            return {"count": len(data), "events": data}
     except Exception:
-        return []
+        return {"count": 0, "events": []}
 
 
-# quick local test when run directly
+# -------------------------------
+# If run as script, run once
+# -------------------------------
 if __name__ == "__main__":
     ev = run_all_scrapers()
     print("Done. Events:", len(ev))
