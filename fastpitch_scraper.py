@@ -26,58 +26,54 @@ DEFAULT_HEADERS = {
 # ============================================
 # SCRAPINGANT FETCHER
 # ============================================
-
 def fetch_via_scrapingant(target_url):
     """
-    Correct ScrapingAnt POST request (fixing the 422 errors).
-    Returns raw HTML as string or None.
+    Works with your account's ScrapingAnt General API (GET, key in query string).
+    Returns HTML string or None.
     """
     if not SCRAPINGANT_KEY:
-        print("ScrapingAnt ERROR: Missing SCRAPINGANT_KEY environment variable")
+        print("ERROR: Missing SCRAPINGANT_KEY")
         return None
 
-    payload = {
-        "url": target_url,
-        "render": True,
-        "return_page_source": True,
-        "proxy_type": "datacenter",
-        "browser": "chrome"
-    }
+    import urllib.parse
+    encoded_url = urllib.parse.quote(target_url, safe="")
 
-    headers = {
-        "x-api-key": SCRAPINGANT_KEY,
-        "Content-Type": "application/json",
-        "User-Agent": DEFAULT_HEADERS["User-Agent"]
-    }
+    api_url = (
+        f"https://api.scrapingant.com/v2/general"
+        f"?url={encoded_url}"
+        f"&x-api-key={SCRAPINGANT_KEY}"
+        f"&browser=chrome"
+        f"&proxy_type=datacenter"
+        f"&render=true"
+    )
 
     delay = 1
     for attempt in range(1, SCRAPINGANT_RETRIES + 1):
         try:
-            print(f"ScrapingAnt: POST attempt {attempt} → {target_url}")
-            r = requests.post(
-                SCRAPINGANT_URL,
-                json=payload,
-                headers=headers,
-                timeout=SCRAPINGANT_TIMEOUT
-            )
+            print(f"ScrapingAnt GET attempt {attempt} → {target_url}")
+            r = requests.get(api_url, timeout=SCRAPINGANT_TIMEOUT)
             r.raise_for_status()
 
             data = r.json()
             html = data.get("content")
 
             if html:
-                print("ScrapingAnt: succeeded")
+                print("ScrapingAnt success")
                 return html
             else:
-                print("ScrapingAnt returned no content field")
+                print("ScrapingAnt returned no content")
 
         except Exception as e:
             print(f"ScrapingAnt attempt {attempt} failed: {e}")
+
             if attempt < SCRAPINGANT_RETRIES:
                 time.sleep(delay)
                 delay *= 2
 
+    print("ScrapingAnt: all retries failed")
     return None
+
+
 
 # ============================================
 # UTILITY: STANDARDIZED EVENT FORMAT
